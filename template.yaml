@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  A serverless website with SAM on AWS: https://izifortune.com/serverless-website-sam-aws/
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 3
+
+Resources:
+  LambdaEdgeFunctionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: '/'
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "AllowLambdaServiceToAssumeRole"
+            Effect: "Allow"
+            Action:
+              - "sts:AssumeRole"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+                - "edgelambda.amazonaws.com"
+      Policies:
+        - PolicyName: s3AccessForLambda
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: [ 's3:*' ]
+                Resource: '*'
+
+  BotsDetectionLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: bots_detection/
+      Description: 'Serverless rewrite lambda'
+      Handler: index.handler
+      Runtime: nodejs10.x
+      MemorySize: 128
+      Timeout: 1
+      Role: !GetAtt LambdaEdgeFunctionRole.Arn
+      AutoPublishAlias: live
+  PrerenderLambda1:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: prerender/
+      Description: 'Serverless rewrite lambda'
+      Handler: index.handler
+      Runtime: nodejs10.x
+      MemorySize: 1024
+      Timeout: 15
+      Role: !GetAtt LambdaEdgeFunctionRole.Arn
+      AutoPublishAlias: live
+
+
+  CloudFrontOriginAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: 'Serverless website Origin access identity serverless website'
+
+  WebsiteCloudfrontDistribution:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        Comment: "Cloudfront distribution for serverless website"
+        DefaultRootObject: "index.html"
+        Enabled: true
+        HttpVersion: http2
+        Origins:
+          - Id: s3-website
+            DomainName: !GetAtt WebBucket.DomainName
+            S3OriginConfig:
+              OriginAccessIdentity:
+                Fn::Sub: 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        DefaultCacheBehavior:
+          Compress: 'true'
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          ForwardedValues:
+            QueryString: false
+            Headers:
+              - X-Prerender-Host
+          TargetOriginId: s3-website
+          ViewerProtocolPolicy: redirect-to-https
+          LambdaFunctionAssociations:
+            - EventType: viewer-request
+              LambdaFunctionARN: !Ref BotsDetectionLambda.Version
+            - EventType: origin-request
+              LambdaFunctionARN: !Ref PrerenderLambda1.Version
+
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: kareem-ayesh-web-1
+  CacheBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: sam-x-cache-2
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action: 's3:GetObject'
+            Resource:
+              - !Sub "arn:aws:s3:::${WebBucket}/*"
+            Principal:
+              AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}"
+  TempConversionDepLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: chromuim-core
+      Description: chromuim-core
+      ContentUri: layers/chrome.zip
+      CompatibleRuntimes:
+        - nodejs10.x
+      LicenseInfo: 'MIT'
+      RetentionPolicy: Retain
